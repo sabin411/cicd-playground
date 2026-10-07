@@ -2,7 +2,6 @@ name: GitHub Actions Demo
 run-name: ${{ github.actor }} is testing out GitHub Actions 🚀
 on:
   pull_request:
-    type: ["opened"]
     branches:
       - main
 
@@ -12,7 +11,7 @@ on:
 jobs:
   # CI run
   build-and-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - name: Use Node.js 24
