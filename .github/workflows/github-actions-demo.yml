@@ -26,6 +26,7 @@ jobs:
 
   docker-image-build:
     needs: build-and-test
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     permissions:
       packages: write
@@ -60,6 +61,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # 👇 Caching configuration tells Docker where to read and write layers
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v2
