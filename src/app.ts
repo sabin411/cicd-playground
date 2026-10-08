@@ -43,19 +43,26 @@ export function createApp(pool: Pool) {
 
   app.get("/api/todos", async (req, res) => {
     const rawUserId = Array.isArray(req.query.user_id) ? req.query.user_id[0] : req.query.user_id;
-    const userId = Number(rawUserId);
-    if (!Number.isInteger(userId) || userId < 1) {
-      res.status(400).json({ errors: ["user_id is required"] });
-      return;
+    const params: number[] = [];
+    let where = "";
+
+    if (rawUserId !== undefined) {
+      const userId = Number(rawUserId);
+      if (!Number.isInteger(userId) || userId < 1) {
+        res.status(400).json({ errors: ["user_id must be a positive integer"] });
+        return;
+      }
+      params.push(userId);
+      where = "WHERE user_id = $1";
     }
 
     const result = await pool.query<Todo>(
       `SELECT id, title, done, user_id, created_at, updated_at
        FROM todos
-       WHERE user_id = $1
-       ORDER BY created_at DESC
+       ${where}
+       ORDER BY created_at DESC, id DESC
        LIMIT 100`,
-      [userId],
+      params,
     );
     res.json(result.rows);
   });

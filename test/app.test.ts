@@ -50,10 +50,17 @@ describe("todo API", () => {
 
     await request(app).post("/api/todos").send({ title: "Other user", user_id: 8 });
 
-    const list = await request(app).get("/api/todos").query({ user_id: 7 });
-    expect(list.status).toBe(200);
-    expect(list.body).toHaveLength(1);
-    expect(list.body[0].title).toBe("Learn GitHub Actions");
+    const forUser = await request(app).get("/api/todos").query({ user_id: 7 });
+    expect(forUser.status).toBe(200);
+    expect(forUser.body).toHaveLength(1);
+    expect(forUser.body[0].title).toBe("Learn GitHub Actions");
+
+    const all = await request(app).get("/api/todos");
+    expect(all.status).toBe(200);
+    expect(all.body.map((todo: { title: string }) => todo.title)).toEqual([
+      "Other user",
+      "Learn GitHub Actions",
+    ]);
   });
 
   it("rejects an empty title", async () => {
@@ -89,6 +96,7 @@ describe("todo API", () => {
       "002_create_todos.sql",
       "003_udpate_todos.sql",
       "004_todos_timestamptz.sql",
+      "005_todos_list_indexes.sql",
     ]);
 
     await initDb(pool);
