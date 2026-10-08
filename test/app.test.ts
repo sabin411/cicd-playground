@@ -9,12 +9,22 @@ if (!databaseUrl) {
   throw new Error("DATABASE_URL is required");
 }
 
-const pool = new Pool({ connectionString: databaseUrl });
+const testDatabaseUrl = new URL(databaseUrl);
+testDatabaseUrl.pathname = "/todos_test";
 
 describe("todo API", () => {
+  let pool: Pool;
   let app: ReturnType<typeof createApp>;
 
   beforeAll(async () => {
+    const admin = new Pool({ connectionString: databaseUrl });
+    const existing = await admin.query("SELECT 1 FROM pg_database WHERE datname = 'todos_test'");
+    if (existing.rowCount === 0) {
+      await admin.query("CREATE DATABASE todos_test");
+    }
+    await admin.end();
+
+    pool = new Pool({ connectionString: testDatabaseUrl.toString() });
     await initDb(pool);
   });
 
@@ -81,6 +91,53 @@ describe("todo API", () => {
     expect(new Date(res.body.updated_at).getTime()).toBeGreaterThan(before.rows[0].updated_at.getTime());
   });
 
+  it("loses a toggle when both transactions read before either writes", async () => {
+    await request(app).post("/api/todos").send({ title: "Race", user_id: 7 });
+
+    let arrived = 0;
+    let releaseBoth: () => void;
+    const bothHaveRead = new Promise<void>((resolve) => {
+      releaseBoth = resolve;
+    });
+
+    async function flipFromMemory() {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const current = await client.query<{ done: boolean }>("SELECT done FROM todos WHERE id = 1");
+        const flipped = !current.rows[0].done;
+        arrived += 1;
+        if (arrived === 2) releaseBoth();
+        await bothHaveRead;
+        await client.query("UPDATE todos SET done = $1, updated_at = now() WHERE id = 1", [flipped]);
+        await client.query("COMMIT");
+      } finally {
+        client.release();
+      }
+    }
+
+    await Promise.all([flipFromMemory(), flipFromMemory()]);
+
+    const row = await pool.query<{ done: boolean }>("SELECT done FROM todos WHERE id = 1");
+    expect(row.rows[0].done).toBe(true);
+  });
+
+  it("applies both toggles when the flip is a single update", async () => {
+    await request(app).post("/api/todos").send({ title: "Race", user_id: 7 });
+
+    const [first, second] = await Promise.all([
+      request(app).patch("/api/todos/1/toggle"),
+      request(app).patch("/api/todos/1/toggle"),
+    ]);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(first.body.done).not.toBe(second.body.done);
+
+    const row = await pool.query<{ done: boolean }>("SELECT done FROM todos WHERE id = 1");
+    expect(row.rows[0].done).toBe(false);
+  });
+
   it("returns 404 for an unknown todo", async () => {
     const res = await request(app).patch("/api/todos/999/toggle");
 
@@ -97,6 +154,7 @@ describe("todo API", () => {
       "003_udpate_todos.sql",
       "004_todos_timestamptz.sql",
       "005_todos_list_indexes.sql",
+      "006_todos_list_index_id.sql",
     ]);
 
     await initDb(pool);
