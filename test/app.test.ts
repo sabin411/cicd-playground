@@ -34,35 +34,44 @@ describe("todo API", () => {
     expect(res.body).toEqual({ status: "ok" });
   });
 
-  it("creates and lists todos", async () => {
+  it("creates and lists todos for one user", async () => {
     const created = await request(app)
       .post("/api/todos")
-      .send({ title: "Learn GitHub Actions" });
+      .send({ title: "Learn GitHub Actions", user_id: 7 });
 
     expect(created.status).toBe(201);
-    expect(created.body).toEqual({
+    expect(created.body).toMatchObject({
       id: 1,
       title: "Learn GitHub Actions",
       done: false,
+      user_id: 7,
     });
+    expect(created.body.created_at).toEqual(created.body.updated_at);
 
-    const list = await request(app).get("/api/todos");
+    await request(app).post("/api/todos").send({ title: "Other user", user_id: 8 });
+
+    const list = await request(app).get("/api/todos").query({ user_id: 7 });
+    expect(list.status).toBe(200);
     expect(list.body).toHaveLength(1);
+    expect(list.body[0].title).toBe("Learn GitHub Actions");
   });
 
   it("rejects an empty title", async () => {
-    const res = await request(app).post("/api/todos").send({ title: "   " });
+    const res = await request(app).post("/api/todos").send({ title: "   ", user_id: 7 });
 
     expect(res.status).toBe(400);
   });
 
-  it("toggles a todo", async () => {
-    await request(app).post("/api/todos").send({ title: "Ship it" });
+  it("toggles a todo and refreshes updated_at", async () => {
+    await request(app).post("/api/todos").send({ title: "Ship it", user_id: 7 });
+    await pool.query("UPDATE todos SET updated_at = updated_at - interval '1 minute' WHERE id = 1");
+    const before = await pool.query<{ updated_at: Date }>("SELECT updated_at FROM todos WHERE id = 1");
 
     const res = await request(app).patch("/api/todos/1/toggle");
 
     expect(res.status).toBe(200);
     expect(res.body.done).toBe(true);
+    expect(new Date(res.body.updated_at).getTime()).toBeGreaterThan(before.rows[0].updated_at.getTime());
   });
 
   it("returns 404 for an unknown todo", async () => {
@@ -71,20 +80,22 @@ describe("todo API", () => {
     expect(res.status).toBe(404);
   });
 
-  it("records each migration once", async () => {
-    await pool.query("DELETE FROM schema_migrations");
-
-    await Promise.all([initDb(pool), initDb(pool)]);
-
-    const recorded = await pool.query(
-      "SELECT name FROM schema_migrations ORDER BY name",
+  it("does not replay applied migrations", async () => {
+    const before = await pool.query<{ name: string; applied_at: Date }>(
+      "SELECT name, applied_at FROM schema_migrations ORDER BY name",
     );
-    expect(recorded.rows).toEqual([{ name: "001_create_todos.sql" }]);
+    expect(before.rows.map((row) => row.name)).toEqual([
+      "001_create_todos.sql",
+      "002_create_todos.sql",
+      "003_udpate_todos.sql",
+      "004_todos_timestamptz.sql",
+    ]);
 
     await initDb(pool);
-    const again = await pool.query(
-      "SELECT name FROM schema_migrations ORDER BY name",
+
+    const after = await pool.query<{ name: string; applied_at: Date }>(
+      "SELECT name, applied_at FROM schema_migrations ORDER BY name",
     );
-    expect(again.rows).toEqual([{ name: "001_create_todos.sql" }]);
+    expect(after.rows).toEqual(before.rows);
   });
 });

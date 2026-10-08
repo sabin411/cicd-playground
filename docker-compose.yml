@@ -25,5 +25,13 @@ services:
       postgres:
         condition: service_healthy
 
+  adminer:
+    image: adminer
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   postgres_data:

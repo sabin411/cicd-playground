@@ -1,0 +1,4 @@
+ALTER TABLE todos ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE todos ALTER COLUMN user_id DROP DEFAULT;
+
+CREATE INDEX todos_user_id_idx ON todos (user_id);
