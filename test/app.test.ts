@@ -29,7 +29,7 @@ describe("todo API", () => {
   });
 
   beforeEach(async () => {
-    await pool.query("TRUNCATE todos RESTART IDENTITY");
+    await pool.query("TRUNCATE todos, idempotency_keys RESTART IDENTITY");
     app = createApp(pool);
   });
 
@@ -44,10 +44,15 @@ describe("todo API", () => {
     expect(res.body).toEqual({ status: "ok" });
   });
 
+  function postTodo(
+    body: { title: string; user_id: number },
+    idempotencyKey: string,
+  ) {
+    return request(app).post("/api/todos").set("Idempotency-Key", idempotencyKey).send(body);
+  }
+
   it("creates and lists todos for one user", async () => {
-    const created = await request(app)
-      .post("/api/todos")
-      .send({ title: "Learn GitHub Actions", user_id: 7 });
+    const created = await postTodo({ title: "Learn GitHub Actions", user_id: 7 }, "create-1");
 
     expect(created.status).toBe(201);
     expect(created.body).toMatchObject({
@@ -58,7 +63,7 @@ describe("todo API", () => {
     });
     expect(created.body.created_at).toEqual(created.body.updated_at);
 
-    await request(app).post("/api/todos").send({ title: "Other user", user_id: 8 });
+    await postTodo({ title: "Other user", user_id: 8 }, "create-2");
 
     const forUser = await request(app).get("/api/todos").query({ user_id: 7 });
     expect(forUser.status).toBe(200);
@@ -74,13 +79,13 @@ describe("todo API", () => {
   });
 
   it("rejects an empty title", async () => {
-    const res = await request(app).post("/api/todos").send({ title: "   ", user_id: 7 });
+    const res = await postTodo({ title: "   ", user_id: 7 }, "empty-title");
 
     expect(res.status).toBe(400);
   });
 
   it("toggles a todo and refreshes updated_at", async () => {
-    await request(app).post("/api/todos").send({ title: "Ship it", user_id: 7 });
+    await postTodo({ title: "Ship it", user_id: 7 }, "toggle-1");
     await pool.query("UPDATE todos SET updated_at = updated_at - interval '1 minute' WHERE id = 1");
     const before = await pool.query<{ updated_at: Date }>("SELECT updated_at FROM todos WHERE id = 1");
 
@@ -92,7 +97,7 @@ describe("todo API", () => {
   });
 
   it("loses a toggle when both transactions read before either writes", async () => {
-    await request(app).post("/api/todos").send({ title: "Race", user_id: 7 });
+    await postTodo({ title: "Race", user_id: 7 }, "race-read");
 
     let arrived = 0;
     let releaseBoth: () => void;
@@ -123,7 +128,7 @@ describe("todo API", () => {
   });
 
   it("applies both toggles when the flip is a single update", async () => {
-    await request(app).post("/api/todos").send({ title: "Race", user_id: 7 });
+    await postTodo({ title: "Race", user_id: 7 }, "race-update");
 
     const [first, second] = await Promise.all([
       request(app).patch("/api/todos/1/toggle"),
@@ -136,6 +141,62 @@ describe("todo API", () => {
 
     const row = await pool.query<{ done: boolean }>("SELECT done FROM todos WHERE id = 1");
     expect(row.rows[0].done).toBe(false);
+  });
+
+  it("returns the original response when the same request is replayed", async () => {
+    const body = { title: "Once", user_id: 7 };
+    const first = await postTodo(body, "replay-key");
+    await request(app).patch("/api/todos/1/toggle");
+    const second = await postTodo(body, "replay-key");
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    expect(second.body).toEqual(first.body);
+    expect(second.body.done).toBe(false);
+
+    const count = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM todos");
+    expect(count.rows[0].count).toBe("1");
+  });
+
+  it("rejects the same key reused for a different request", async () => {
+    const first = await postTodo({ title: "Once", user_id: 7 }, "replay-key");
+    const second = await postTodo({ title: "Ignored", user_id: 7 }, "replay-key");
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(409);
+
+    const count = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM todos");
+    expect(count.rows[0].count).toBe("1");
+  });
+
+  it("inserts a new todo for a different key", async () => {
+    const first = await postTodo({ title: "First", user_id: 7 }, "key-a");
+    const second = await postTodo({ title: "Second", user_id: 7 }, "key-b");
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    expect(second.body.id).not.toBe(first.body.id);
+
+    const count = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM todos");
+    expect(count.rows[0].count).toBe("2");
+  });
+
+  it("rejects a create with no idempotency key", async () => {
+    const res = await request(app).post("/api/todos").send({ title: "No key", user_id: 7 });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("inserts one todo when the same key arrives twice at once", async () => {
+    const [first, second] = await Promise.all([
+      postTodo({ title: "Together", user_id: 7 }, "same-key"),
+      postTodo({ title: "Together", user_id: 7 }, "same-key"),
+    ]);
+
+    expect(first.body.id).toBe(second.body.id);
+
+    const count = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM todos");
+    expect(count.rows[0].count).toBe("1");
   });
 
   it("returns 404 for an unknown todo", async () => {
@@ -155,6 +216,9 @@ describe("todo API", () => {
       "004_todos_timestamptz.sql",
       "005_todos_list_indexes.sql",
       "006_todos_list_index_id.sql",
+      "007_update_todos.sql",
+      "008_todos_idempotency_key.sql",
+      "009_idempotency_keys.sql",
     ]);
 
     await initDb(pool);

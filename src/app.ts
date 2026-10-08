@@ -1,5 +1,6 @@
-import express from "express";
-import type { Pool } from "pg";
+import { createHash } from "node:crypto";
+import express, { type Response } from "express";
+import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 
 const createTodoSchema = z.object({
@@ -12,9 +13,41 @@ type Todo = {
   title: string;
   done: boolean;
   user_id: number;
-  created_at: Date;
-  updated_at: Date;
+  created_at: Date | string;
+  updated_at: Date | string;
 };
+
+type SavedRequest = {
+  request_hash: string;
+  status_code: number;
+  response: Todo;
+};
+
+function requestHash(body: { title: string; user_id: number }) {
+  return createHash("sha256")
+    .update(JSON.stringify({ title: body.title, user_id: body.user_id }))
+    .digest("hex");
+}
+
+function todoResponse(todo: Todo) {
+  return {
+    ...todo,
+    created_at: todo.created_at instanceof Date ? todo.created_at.toISOString() : todo.created_at,
+    updated_at: todo.updated_at instanceof Date ? todo.updated_at.toISOString() : todo.updated_at,
+  };
+}
+
+function isUniqueViolation(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
+}
+
+function sendSaved(res: Response, saved: SavedRequest, hash: string) {
+  if (saved.request_hash !== hash) {
+    res.status(409).json({ errors: ["idempotency key was already used with a different request"] });
+    return;
+  }
+  res.status(saved.status_code).json(saved.response);
+}
 
 export function createApp(pool: Pool) {
   const app = express();
@@ -42,14 +75,18 @@ export function createApp(pool: Pool) {
   });
 
   app.get("/api/todos", async (req, res) => {
-    const rawUserId = Array.isArray(req.query.user_id) ? req.query.user_id[0] : req.query.user_id;
+    const rawUserId = Array.isArray(req.query.user_id)
+      ? req.query.user_id[0]
+      : req.query.user_id;
     const params: number[] = [];
     let where = "";
 
     if (rawUserId !== undefined) {
       const userId = Number(rawUserId);
       if (!Number.isInteger(userId) || userId < 1) {
-        res.status(400).json({ errors: ["user_id must be a positive integer"] });
+        res
+          .status(400)
+          .json({ errors: ["user_id must be a positive integer"] });
         return;
       }
       params.push(userId);
@@ -69,6 +106,15 @@ export function createApp(pool: Pool) {
 
   app.post("/api/todos", async (req, res) => {
     const parsed = createTodoSchema.safeParse(req.body);
+    const rawKey =
+      req.headers["x-idempotency-key"] ?? req.headers["idempotency-key"];
+    const idempotencyKey = Array.isArray(rawKey) ? rawKey[0] : rawKey;
+
+    if (!idempotencyKey?.trim() || idempotencyKey.length > 200) {
+      res.status(400).json({ errors: ["x-idempotency-key is required"] });
+      return;
+    }
+
     if (!parsed.success) {
       res
         .status(400)
@@ -76,11 +122,14 @@ export function createApp(pool: Pool) {
       return;
     }
 
-    const result = await pool.query<Todo>(
-      "INSERT INTO todos (title, user_id) VALUES ($1, $2) RETURNING id, title, done, user_id, created_at, updated_at",
-      [parsed.data.title, parsed.data.user_id],
-    );
-    res.status(201).json(result.rows[0]);
+    const hash = requestHash(parsed.data);
+    const client = await pool.connect();
+    try {
+      const saved = await createTodoOnce(client, parsed.data, idempotencyKey, hash);
+      sendSaved(res, saved, hash);
+    } finally {
+      client.release();
+    }
   });
 
   app.patch("/api/todos/:id/toggle", async (req, res) => {
@@ -107,4 +156,53 @@ export function createApp(pool: Pool) {
   });
 
   return app;
+}
+
+async function createTodoOnce(
+  client: PoolClient,
+  body: { title: string; user_id: number },
+  idempotencyKey: string,
+  hash: string,
+): Promise<SavedRequest> {
+  await client.query("BEGIN");
+  try {
+    const existing = await client.query<SavedRequest>(
+      `SELECT request_hash, status_code, response
+       FROM idempotency_keys
+       WHERE user_id = $1 AND key = $2`,
+      [body.user_id, idempotencyKey],
+    );
+    if (existing.rows[0]) {
+      await client.query("COMMIT");
+      return existing.rows[0];
+    }
+
+    const inserted = await client.query<Todo>(
+      `INSERT INTO todos (title, user_id)
+       VALUES ($1, $2)
+       RETURNING id, title, done, user_id, created_at, updated_at`,
+      [body.title, body.user_id],
+    );
+    const response = todoResponse(inserted.rows[0]);
+    await client.query(
+      `INSERT INTO idempotency_keys (user_id, key, request_hash, status_code, response)
+       VALUES ($1, $2, $3, 201, $4)`,
+      [body.user_id, idempotencyKey, hash, response],
+    );
+    await client.query("COMMIT");
+    return { request_hash: hash, status_code: 201, response };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    if (!isUniqueViolation(error)) {
+      throw error;
+    }
+  }
+
+  const saved = await client.query<SavedRequest>(
+    `SELECT request_hash, status_code, response
+     FROM idempotency_keys
+     WHERE user_id = $1 AND key = $2`,
+    [body.user_id, idempotencyKey],
+  );
+  return saved.rows[0];
 }
