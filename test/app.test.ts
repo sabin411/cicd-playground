@@ -35,10 +35,16 @@ describe("todo API", () => {
   });
 
   it("creates and lists todos", async () => {
-    const created = await request(app).post("/api/todos").send({ title: "Learn GitHub Actions" });
+    const created = await request(app)
+      .post("/api/todos")
+      .send({ title: "Learn GitHub Actions" });
 
     expect(created.status).toBe(201);
-    expect(created.body).toEqual({ id: 1, title: "Learn GitHub Actions", done: false });
+    expect(created.body).toEqual({
+      id: 1,
+      title: "Learn GitHub Actions",
+      done: false,
+    });
 
     const list = await request(app).get("/api/todos");
     expect(list.body).toHaveLength(1);
@@ -70,11 +76,15 @@ describe("todo API", () => {
 
     await Promise.all([initDb(pool), initDb(pool)]);
 
-    const recorded = await pool.query("SELECT name FROM schema_migrations ORDER BY name");
+    const recorded = await pool.query(
+      "SELECT name FROM schema_migrations ORDER BY name",
+    );
     expect(recorded.rows).toEqual([{ name: "001_create_todos.sql" }]);
 
     await initDb(pool);
-    const again = await pool.query("SELECT name FROM schema_migrations ORDER BY name");
+    const again = await pool.query(
+      "SELECT name FROM schema_migrations ORDER BY name",
+    );
     expect(again.rows).toEqual([{ name: "001_create_todos.sql" }]);
   });
 });

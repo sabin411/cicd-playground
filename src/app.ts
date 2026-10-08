@@ -29,7 +29,7 @@ export function createApp(pool: Pool) {
       return;
     }
 
-    res.json({ status: "okay" });
+    res.json({ status: "ok" });
   });
 
   app.get("/api/todos", async (_req, res) => {
