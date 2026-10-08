@@ -1,12 +1,30 @@
+import { Pool } from "pg";
 import request from "supertest";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { initDb } from "../src/db.js";
+
+const databaseUrl = process.env.DATABASE_URL;
+if (!databaseUrl) {
+  throw new Error("DATABASE_URL is required");
+}
+
+const pool = new Pool({ connectionString: databaseUrl });
 
 describe("todo API", () => {
   let app: ReturnType<typeof createApp>;
 
-  beforeEach(() => {
-    app = createApp();
+  beforeAll(async () => {
+    await initDb(pool);
+  });
+
+  beforeEach(async () => {
+    await pool.query("TRUNCATE todos RESTART IDENTITY");
+    app = createApp(pool);
+  });
+
+  afterAll(async () => {
+    await pool.end();
   });
 
   it("reports healthy", async () => {
@@ -45,5 +63,18 @@ describe("todo API", () => {
     const res = await request(app).patch("/api/todos/999/toggle");
 
     expect(res.status).toBe(404);
+  });
+
+  it("records each migration once", async () => {
+    await pool.query("DELETE FROM schema_migrations");
+
+    await Promise.all([initDb(pool), initDb(pool)]);
+
+    const recorded = await pool.query("SELECT name FROM schema_migrations ORDER BY name");
+    expect(recorded.rows).toEqual([{ name: "001_create_todos.sql" }]);
+
+    await initDb(pool);
+    const again = await pool.query("SELECT name FROM schema_migrations ORDER BY name");
+    expect(again.rows).toEqual([{ name: "001_create_todos.sql" }]);
   });
 });

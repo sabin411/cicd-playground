@@ -1,4 +1,5 @@
 import express from "express";
+import type { Pool } from "pg";
 import { z } from "zod";
 
 const createTodoSchema = z.object({
@@ -11,41 +12,66 @@ type Todo = {
   done: boolean;
 };
 
-export function createApp() {
-  const todos: Todo[] = [];
-  let nextId = 1;
-
+export function createApp(pool: Pool) {
   const app = express();
   app.use(express.json());
 
-  app.get("/health", (_req, res) => {
-    res.json({ status: "ok" });
-  });
+  app.get("/health", async (_req, res) => {
+    try {
+      const result = await pool.query<{ count: number }>("SELECT 1 AS count");
 
-  app.get("/api/todos", (_req, res) => {
-    res.json(todos);
-  });
-
-  app.post("/api/todos", (req, res) => {
-    const result = createTodoSchema.safeParse(req.body);
-    if (!result.success) {
-      res.status(400).json({ errors: result.error.issues.map((issue) => issue.message) });
+      if (result.rowCount !== 1) {
+        res.status(500).json({ error: "Database connection failed" });
+        return;
+      }
+    } catch (error) {
+      res.status(503).json({ error: (error as Error).message });
       return;
     }
 
-    const todo: Todo = { id: nextId++, title: result.data.title, done: false };
-    todos.push(todo);
-    res.status(201).json(todo);
+    res.json({ status: "okay" });
   });
 
-  app.patch("/api/todos/:id/toggle", (req, res) => {
-    const todo = todos.find((t) => t.id === Number(req.params.id));
+  app.get("/api/todos", async (_req, res) => {
+    const result = await pool.query<Todo>(
+      "SELECT id, title, done FROM todos ORDER BY id",
+    );
+    res.json(result.rows);
+  });
+
+  app.post("/api/todos", async (req, res) => {
+    const parsed = createTodoSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res
+        .status(400)
+        .json({ errors: parsed.error.issues.map((issue) => issue.message) });
+      return;
+    }
+
+    const result = await pool.query<Todo>(
+      "INSERT INTO todos (title) VALUES ($1) RETURNING id, title, done",
+      [parsed.data.title],
+    );
+    res.status(201).json(result.rows[0]);
+  });
+
+  app.patch("/api/todos/:id/toggle", async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      res.status(404).json({ errors: ["Todo not found"] });
+      return;
+    }
+
+    const result = await pool.query<Todo>(
+      "UPDATE todos SET done = NOT done WHERE id = $1 RETURNING id, title, done",
+      [id],
+    );
+    const todo = result.rows[0];
     if (!todo) {
       res.status(404).json({ errors: ["Todo not found"] });
       return;
     }
 
-    todo.done = !todo.done;
     res.json(todo);
   });
 
