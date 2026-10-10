@@ -1,0 +1,2 @@
+ALTER TABLE todos ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE todos ALTER COLUMN idempotency_key DROP DEFAULT;
