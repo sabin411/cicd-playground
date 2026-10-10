@@ -219,6 +219,8 @@ describe("todo API", () => {
       "007_update_todos.sql",
       "008_todos_idempotency_key.sql",
       "009_idempotency_keys.sql",
+      "010_create_users.sql",
+      "011_users_case_insensitive.sql",
     ]);
 
     await initDb(pool);

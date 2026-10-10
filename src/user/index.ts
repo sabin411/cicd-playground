@@ -17,7 +17,7 @@ export type User = z.infer<typeof createUserSchema> & z.infer<typeof BaseType>;
 
 export async function checkUsername(pool: Pool, username: string) {
   const result = await pool.query(`SELECT id FROM users WHERE username = $1`, [
-    username,
+    username.toLocaleLowerCase(),
   ]);
   if (result.rowCount && result.rowCount > 0) {
     return true;
@@ -27,7 +27,7 @@ export async function checkUsername(pool: Pool, username: string) {
 
 export async function checkEmail(pool: Pool, email: string) {
   const result = await pool.query(`SELECT id FROM users WHERE email = $1`, [
-    email,
+    email.toLocaleLowerCase(),
   ]);
   if (result.rowCount && result.rowCount > 0) {
     return true;
@@ -43,7 +43,11 @@ export async function createUser(
     `INSERT INTO users (name, username, email)
      VALUES ($1, $2, $3)
      RETURNING id, username, email, created_at, updated_at`,
-    [data.name, data.username, data.email],
+    [
+      data.name,
+      data.username.toLocaleLowerCase(),
+      data.email.toLocaleLowerCase(),
+    ],
   );
 
   return result.rows[0];

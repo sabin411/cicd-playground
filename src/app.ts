@@ -2,12 +2,7 @@ import { createHash } from "node:crypto";
 import express, { type Response } from "express";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import {
-  checkEmail,
-  checkUsername,
-  createUser,
-  createUserSchema,
-} from "./user/index.js";
+import { checkUsername, createUser, createUserSchema } from "./user/index.js";
 
 const createTodoSchema = z.object({
   title: z.string().trim().min(1).max(200),
@@ -217,27 +212,18 @@ export function createApp(pool: Pool) {
           .json({ errors: parsed.error.issues.map((issue) => issue.message) });
         return;
       }
-
-      const usernameExists = await checkUsername(pool, parsed.data.username);
-      if (usernameExists) {
-        res.status(409).json({ errors: ["Username already exists"] });
-        return;
-      }
-      const emailExists = await checkEmail(pool, parsed.data.email);
-      if (emailExists) {
-        res.status(409).json({ errors: ["Email already exists"] });
-        return;
-      }
-
       const user = await createUser(pool, parsed.data);
 
       res.status(201).json(user);
     } catch (error) {
-      if (error instanceof Error) {
-        res.status(500).json({ errors: [error.message] });
-      } else {
-        res.status(500).json({ errors: ["Internal server error"] });
+      const pgError = error as { code?: string; constraint?: string };
+      if (pgError.code === "23505") {
+        const field =
+          pgError.constraint === "users_email_lower_idx" ? "Email" : "Username";
+        res.status(409).json({ errors: [`${field} already exists`] });
+        return;
       }
+      res.status(500).json({ errors: ["Internal server error"] });
     }
   });
 
